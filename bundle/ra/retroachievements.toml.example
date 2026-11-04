@@ -1,0 +1,26 @@
+# RetroAchievements login for SNESRecomp games.
+#
+# HOW TO ENABLE:
+#  1. Copy this file to "retroachievements.toml" (same folder as the
+#     game executable).
+#  2. Get your Connect API token: log in at retroachievements.org,
+#     go to Settings -> API Token, and copy it. (Use the token,
+#     NEVER your password. The token can be revoked anytime from
+#     the same page.)
+#  3. Fill in your username and token below, save, and restart
+#     the game.
+#  4. A "RetroAchievements / Logged in" toast appears in-game and
+#     achievements unlock as you play.
+#
+# If this file is absent (or username/token are blank),
+# RetroAchievements simply stays off and the game runs normally.
+#
+# hardcore: true = hardcore mode. NOTE: RetroAchievements counts
+#          hardcore unlocks only from approved clients; a recomp
+#          client is an unknown emulator, so unlocks register as
+#          Casual/softcore either way. The flag is passed through
+#          honestly; nothing is spoofed.
+
+username = "YOUR_USERNAME"
+api_token = "YOUR_API_TOKEN"
+hardcore = false
