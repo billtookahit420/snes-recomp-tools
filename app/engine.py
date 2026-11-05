@@ -215,22 +215,32 @@ def ensure_rust(log):
 
 def ensure_system_tools(log, targets):
     """Best-effort auto-install of the system build tools a
-    conversion needs (cmake, ninja, C/C++ compilers, git, and
-    MinGW for Windows packages). User-level installs (Rust)
-    happen in ensure_rust; these need apt, so they install only
-    when passwordless sudo is available — otherwise the exact
-    command is logged for the user to run once."""
+    conversion needs (cmake, ninja, C/C++ compilers, git,
+    pkg-config, MinGW for Windows packages) plus — for the Linux
+    target — the system development libraries the SDL3 build
+    probes with pkg-config (see LINUX_BUILD_LIBS). User-level
+    installs (Rust) happen in ensure_rust; these need apt, so
+    they install only when passwordless sudo is available —
+    otherwise the exact, complete command is logged for the
+    user to run once (the GUI's "Install missing packages"
+    button covers the same set via pkexec)."""
     env = _rust_env()
     path = env.get("PATH", "")
-    want = ["cmake", "ninja", "gcc", "g++", "git"]
+    want = ["cmake", "ninja", "gcc", "g++", "git", "pkg-config"]
     if "windows" in targets:
         want += ["x86_64-w64-mingw32-gcc", "x86_64-w64-mingw32-g++"]
     missing = [t for t in want
                if not shutil.which(t, path=path)]
-    if not missing:
+    lib_pkgs = missing_linux_build_libs(env) \
+        if "linux" in targets else []
+    if not missing and not lib_pkgs:
         return
-    pkgs = sorted({APT_PACKAGES[t] for t in missing})
-    log_line(log, "missing build tools: " + ", ".join(missing))
+    pkgs = sorted({APT_PACKAGES[t] for t in missing} | set(lib_pkgs))
+    if missing:
+        log_line(log, "missing build tools: " + ", ".join(missing))
+    if lib_pkgs:
+        log_line(log, "missing Linux build libraries: "
+                      + ", ".join(lib_pkgs))
     apt = shutil.which("apt-get")
     sudo_ok = False
     if apt and shutil.which("sudo"):
@@ -245,14 +255,18 @@ def ensure_system_tools(log, targets):
         _run(["sudo", "-n", "apt-get", "install", "-y",
               "--no-install-recommends"] + pkgs, log, timeout=1800)
         still = [t for t in missing if not shutil.which(t, path=path)]
+        still += missing_linux_build_libs(env) \
+            if "linux" in targets else []
         if still:
             log_line(log, "still missing after apt: "
-                          + ", ".join(still))
+                          + ", ".join(sorted(set(still))))
     else:
         log_line(log, "install them once with:  sudo apt install "
                       + " ".join(pkgs)
-                      + "  (the app installs them itself when "
-                        "passwordless sudo is available)")
+                      + "  (or use the app's \"Install missing "
+                        "packages\" button; the app installs them "
+                        "itself when passwordless sudo is "
+                        "available)")
 
 
 # --------------------------------------------------------------------------
@@ -550,17 +564,90 @@ APT_PACKAGES = {
     "gcc": "build-essential",
     "g++": "build-essential",
     "git": "git",
+    "pkg-config": "pkg-config",
     "x86_64-w64-mingw32-gcc": "gcc-mingw-w64-x86-64",
     "x86_64-w64-mingw32-g++": "g++-mingw-w64-x86-64",
 }
 
+# pkg-config module -> Ubuntu dev package, for the Linux-native
+# build. The framework fetches and builds SDL3 itself, but SDL3's
+# CMake probes the system for these development libraries (X11 +
+# extensions, xkbcommon, DRM/GBM, EGL/GL, audio, udev, dbus,
+# Wayland, libdecor). When one is missing the Linux configure dies
+# minutes in under a wall of CMake output — the 2026-11-05 field
+# failure, where only the Windows zip appeared because the Windows
+# build is self-contained and the Linux failure was invisible.
+# They are checked up front so a gap is a list of named packages,
+# not a dead build.
+LINUX_BUILD_LIBS = [
+    ("x11", "libx11-dev"),
+    ("xext", "libxext-dev"),
+    ("xrandr", "libxrandr-dev"),
+    ("xcursor", "libxcursor-dev"),
+    ("xi", "libxi-dev"),
+    ("xfixes", "libxfixes-dev"),
+    ("xscrnsaver", "libxss-dev"),
+    ("xtst", "libxtst-dev"),
+    ("xinerama", "libxinerama-dev"),
+    ("xxf86vm", "libxxf86vm-dev"),
+    ("xkbcommon", "libxkbcommon-dev"),
+    ("xkbcommon-x11", "libxkbcommon-x11-dev"),
+    ("libdrm", "libdrm-dev"),
+    ("gbm", "libgbm-dev"),
+    ("egl", "libegl-dev"),
+    ("gl", "libgl-dev"),
+    ("alsa", "libasound2-dev"),
+    ("libpulse", "libpulse-dev"),
+    ("libudev", "libudev-dev"),
+    ("dbus-1", "libdbus-1-dev"),
+    ("wayland-client", "libwayland-dev"),
+    ("libdecor-0", "libdecor-0-dev"),
+]
+
+
+def _pkg_config_exists(name, env=None):
+    pc = shutil.which("pkg-config",
+                      path=(env or os.environ).get("PATH", ""))
+    if not pc:
+        return False
+    try:
+        return subprocess.run([pc, "--exists", name],
+                              capture_output=True,
+                              timeout=15).returncode == 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def linux_build_lib_status(env=None):
+    """[(pkg-config name, apt package, found)] for the system
+    libraries the Linux-native build needs. Empty on non-Linux
+    hosts (the checks are meaningless there)."""
+    if sys.platform.startswith("win"):
+        return []
+    return [(pc_name, apt, _pkg_config_exists(pc_name, env))
+            for pc_name, apt in LINUX_BUILD_LIBS]
+
+
+def missing_linux_build_libs(env=None):
+    """apt packages for the Linux-native build libraries missing
+    on this host ([] when complete, or not a Linux host)."""
+    return sorted({apt for _, apt, found in linux_build_lib_status(env)
+                   if not found})
+
 
 def toolbox():
     checks = []
-    for tool in ["cmake", "ninja", "gcc", "g++", "git",
+    for tool in ["cmake", "ninja", "gcc", "g++", "git", "pkg-config",
                  "x86_64-w64-mingw32-gcc", "x86_64-w64-mingw32-g++"]:
         checks.append({"tool": tool, "found": shutil.which(tool) is not None,
                        "apt": APT_PACKAGES[tool]})
+    # System libraries the Linux-native build links against
+    # (pkg-config probes; skipped entirely on a Windows host).
+    # Their apt packages join missing_apt, so the GUI's
+    # "Install missing packages" button (pkexec) covers them.
+    for pc_name, apt, found in linux_build_lib_status():
+        checks.append({"tool": f"pkg-config {pc_name} (Linux build)",
+                       "found": found, "apt": apt})
     env = _rust_env()
     ver, ver_str = _cargo_version(env)
     rust_ok = bool(ver and ver >= (1, 85))
@@ -586,6 +673,16 @@ def toolbox():
                      "the app installs it automatically with rustup "
                      "into its own tools folder on the first "
                      "conversion.")
+    lib_missing = missing_linux_build_libs()
+    if lib_missing:
+        notes.append("The Linux build also needs system "
+                     "development libraries for the SDL3 build "
+                     "(X11 extensions, xkbcommon, DRM/GBM, "
+                     "EGL/GL, ALSA, PulseAudio, udev, dbus, "
+                     "Wayland, libdecor). Missing: "
+                     + ", ".join(lib_missing)
+                     + " — \"Install missing packages\" installs "
+                       "them with one password prompt.")
     return {"checks": checks, "missing_apt": missing,
             "ready": not missing and rust_ok, "notes": notes}
 
@@ -1073,6 +1170,19 @@ def package(job, probe, title, proj_name, target, exe, bdir, log):
 
 
 def run_job(job, log=None):
+    """Run one conversion job and report exactly what happened.
+
+    Result contract (the GUI relies on this — a target failure
+    must never be invisible):
+      status "done"         every requested target packaged;
+                            result["failures"] is empty
+      status "partial"      some targets packaged, some failed;
+                            result["failures"] maps each failed
+                            target to its reason
+      status "needs_review" the probe flagged the ROM; no build ran
+      raises RuntimeError   every requested target failed (the
+                            failures are in the exception message)
+    """
     probe = probe_rom(job["rom"])
     log_line(log, f"probe: \"{probe['header_title']}\" {probe['mapping']} "
                   f"chip {probe['coprocessor']} ROM {probe['rom_size_kb']}K "
@@ -1100,6 +1210,21 @@ def run_job(job, log=None):
     failures = {}
     for target in job.get("targets", ["linux", "windows"]):
         try:
+            if target == "linux":
+                # Preflight: the native build needs system dev
+                # libraries (pkg-config probes). Fail fast with
+                # the package names instead of dying minutes
+                # into CMake — and never let the other target's
+                # success make this failure invisible.
+                lib_pkgs = missing_linux_build_libs(_rust_env())
+                if lib_pkgs:
+                    raise RuntimeError(
+                        "missing Linux build libraries: "
+                        + ", ".join(lib_pkgs)
+                        + " — use the app's \"Install missing "
+                          "packages\" button (one password "
+                          "prompt), or run: sudo apt install "
+                        + " ".join(lib_pkgs))
             log_line(log, f"building {target}…")
             bdir, exe = build_target(proj, proj_name, target,
                                      int(job.get("jobs", 2)), log)
@@ -1115,7 +1240,13 @@ def run_job(job, log=None):
             log_line(log, f"ERROR: {target} target failed: {e}")
     if not results:
         raise RuntimeError(f"all targets failed: {failures}")
-    return {"status": "done", "probe": probe, "packages": results,
+    status = "partial" if failures else "done"
+    if failures:
+        log_line(log, "PARTIAL result: packaged "
+                      + ", ".join(sorted(results)) + "; FAILED "
+                      + ", ".join(sorted(failures))
+                      + " — this job is NOT fully done")
+    return {"status": status, "probe": probe, "packages": results,
             "failures": failures}
 
 
