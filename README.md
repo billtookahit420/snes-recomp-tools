@@ -25,16 +25,31 @@ playing.
 
 ## What you need on the machine
 
-git, Python 3.11+, CMake, Ninja, a C/C++ toolchain, and **Rust
-(cargo ≥ 1.85)** — the framework's analyzer (`recompiler-rs`) is a
-Rust binary that the first conversion builds. SDL is downloaded and
-built by the framework itself; no system SDL package is required.
-The Windows target cross-builds with MinGW-w64. **You do not have
-to install any of this by hand:** on the first conversion the app
-installs Rust itself with rustup (into its own `tools/` folder, no
-admin rights needed) and installs the apt build packages too when
-passwordless sudo is available — the Toolbox line in the app shows
-what is present and names anything left for you to install.
+git, Python 3.11+, CMake, Ninja, pkg-config, a C/C++ toolchain,
+and **Rust (cargo ≥ 1.85)** — the framework's analyzer
+(`recompiler-rs`) is a Rust binary that the first conversion
+builds. SDL is downloaded and built by the framework itself, but
+building it for **Linux** links against system development
+libraries: the X11 extension dev packages, xkbcommon (+ its X11
+module), libdrm, libgbm, EGL/GL, ALSA, PulseAudio, udev, dbus,
+Wayland and libdecor (`libx11-dev`, `libxtst-dev`,
+`libxkbcommon-x11-dev`, `libdrm-dev`, `libgbm-dev`,
+`libegl-dev`, `libgl-dev`, `libasound2-dev`, `libpulse-dev`,
+`libudev-dev`, `libdbus-1-dev`, `libwayland-dev`,
+`libdecor-0-dev`, …). The Windows target cross-builds with
+MinGW-w64 and brings its own libraries, so it needs none of
+those. **You do not have to install any of this by hand:** on
+the first conversion the app installs Rust itself with rustup
+(into its own `tools/` folder, no admin rights needed); the
+Toolbox line in the app checks every command *and* every one of
+those libraries by name, and **Install missing packages**
+installs whatever is missing with one password prompt (pkexec).
+If a Linux build library is missing, the Linux target is
+refused up front with the package names instead of dying inside
+the build — and a conversion is only reported **done** when
+every target you picked actually packaged: a game whose Linux
+build failed shows **PARTIAL** with the failed target named, in
+the queue row, the log, and the end-of-queue summary.
 
 First run also clones the framework into `framework-cache/` (the app
 ships without it): snesrecomp itself plus, per game project, the
@@ -137,5 +152,8 @@ framework checkout for the full notices.
 First working version (2026-11-02): engine + GUI + toolbox, SMW
 proof conversion boot-verified on Linux. Windows packages are
 cross-built with MinGW and labelled compile-verified until one is
-run on a real Windows machine. Not published — the converter family
-publishes together, later, on the owner's word.
+run on a real Windows machine. Published with the converter
+family on 2026-11-03. The 2026-11-05 fix (repo release v1.0.1)
+ends silent partial conversions — per-target failures are now
+surfaced in the queue, the log and the end-of-queue summary —
+and adds the Linux build-library checks described above.
