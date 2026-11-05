@@ -122,10 +122,24 @@ RETROACHIEVEMENTS
   in the toml. Nothing about the client is spoofed.
 
 TOOLBOX
-  Building needs: git, Python 3.11+, CMake, Ninja, a C/C++
-  compiler, and Rust (cargo 1.85+) for the analyzer. SDL is
-  downloaded and built by the framework itself; no system SDL
-  package is needed. The Windows target cross-builds with MinGW.
+  Building needs: git, Python 3.11+, CMake, Ninja, pkg-config,
+  a C/C++ compiler, and Rust (cargo 1.85+) for the analyzer.
+  SDL is downloaded and built by the framework itself — but
+  building it for Linux links against system development
+  libraries: the X11 extension dev packages, xkbcommon,
+  libdrm, libgbm, EGL/GL, ALSA, PulseAudio, udev, dbus,
+  Wayland and libdecor (the lib*-dev packages). The Windows
+  target cross-builds with MinGW and brings its own
+  libraries, so it does not need them. The Toolbox line at
+  the bottom of the Convert tab names everything missing;
+  "Install missing packages" installs the lot with one
+  password prompt (pkexec). If a library is missing, the
+  Linux build is refused up front with the package names
+  instead of dying inside the build. And a game is only
+  marked "done" when every target you picked packaged —
+  if one target fails, the row says PARTIAL and names the
+  target that failed, and the end-of-queue summary lists
+  it again.
 
 CREDITS
   Built on snesrecomp by Matthew Stanley (mstan), part of the
@@ -139,6 +153,7 @@ CREDITS
 class Worker(QThread):
     log = Signal(str)
     status = Signal(int, str)
+    summary = Signal(object)        # [(title, kind, detail), ...]
     finished_all = Signal()
 
     def __init__(self, items, settings):
@@ -147,17 +162,46 @@ class Worker(QThread):
         self.settings = settings
 
     def run(self):
+        # Per-game outcomes are collected and handed to the main
+        # window with the summary signal: a game whose Linux
+        # target died while Windows packaged is PARTIAL, and it
+        # must read that way in the table, in the log, and in
+        # the end-of-queue summary — never as a plain "done"
+        # (the 2026-11-05 field failure: Windows-only zips
+        # behind rows that all said "done").
+        outcomes = []
         for row, job in self.items:
+            title = job.get("title") or "game"
             self.status.emit(row, "converting…")
             try:
                 result = engine.run_job(job, log=self.log.emit)
                 if result["status"] == "needs_review":
                     self.status.emit(row, "needs review")
+                    outcomes.append((title, "needs_review", ""))
+                elif result["status"] == "partial":
+                    failures = result.get("failures") or {}
+                    packaged = sorted((result.get("packages")
+                                       or {}).keys())
+                    failed = sorted(failures.keys())
+                    ok_txt = ", ".join(t.capitalize() for t in packaged)
+                    bad_txt = ", ".join(t.capitalize() for t in failed)
+                    self.status.emit(
+                        row, f"PARTIAL — {ok_txt} only ({bad_txt} failed)")
+                    detail = "; ".join(f"{t}: {failures[t]}"
+                                       for t in failed)
+                    self.log.emit(
+                        f"PARTIAL {title}: packaged "
+                        f"[{', '.join(packaged)}]; FAILED "
+                        f"[{', '.join(failed)}]: {detail}")
+                    outcomes.append((title, "partial", detail))
                 else:
                     self.status.emit(row, "done")
+                    outcomes.append((title, "done", ""))
             except Exception as e:  # noqa: BLE001
                 self.log.emit(f"FAILED {job.get('title')}: {e}")
                 self.status.emit(row, "failed")
+                outcomes.append((title, "failed", str(e)))
+        self.summary.emit(outcomes)
         self.finished_all.emit()
 
 
@@ -361,9 +405,17 @@ class MainWindow(QMainWindow):
                 self.install_btn.setEnabled(False)
             else:
                 missing = list(t["missing_apt"])
-                self.toolbox_label.setText(
-                    "Toolbox: missing " + ", ".join(missing)
-                    if missing else "Toolbox: check the log notes")
+                if missing:
+                    self.log_line("toolbox missing: "
+                                  + ", ".join(missing))
+                    shown = ", ".join(missing[:4])
+                    if len(missing) > 4:
+                        shown += f" +{len(missing) - 4} more"
+                    self.toolbox_label.setText("Toolbox: missing "
+                                               + shown)
+                else:
+                    self.toolbox_label.setText(
+                        "Toolbox: check the log notes")
                 self.install_btn.setEnabled(bool(missing))
             for note in t.get("notes", []):
                 self.log_line("toolbox: " + note)
@@ -537,12 +589,35 @@ class MainWindow(QMainWindow):
         self.worker = Worker(jobs, s)
         self.worker.log.connect(self.log_line)
         self.worker.status.connect(self._set_status)
-        self.worker.finished_all.connect(self._run_done)
+        self.worker.summary.connect(self._run_done)
         self.worker.start()
 
-    def _run_done(self):
+    def _run_done(self, outcomes=None):
         self.run_btn.setEnabled(True)
+        outcomes = outcomes or []
+        full = [o for o in outcomes if o[1] == "done"]
+        partial = [o for o in outcomes if o[1] == "partial"]
+        failed = [o for o in outcomes if o[1] == "failed"]
+        review = [o for o in outcomes if o[1] == "needs_review"]
         self.log_line("Queue finished.")
+        self.log_line(f"Summary: {len(full)} done, {len(partial)} "
+                      f"partial, {len(failed)} failed, "
+                      f"{len(review)} needs review "
+                      f"(of {len(outcomes)}).")
+        for title, _kind, detail in partial:
+            self.log_line(f"  PARTIAL {title}: {detail}")
+        for title, _kind, detail in failed:
+            self.log_line(f"  FAILED {title}: {detail}")
+        if partial or failed:
+            lines = [f"{len(full)} of {len(outcomes)} games "
+                     f"converted fully; {len(partial)} partial, "
+                     f"{len(failed)} failed:"]
+            for title, kind, detail in partial + failed:
+                lines.append(f"\n{title} ({kind}): {detail}")
+            lines.append("\nFailed games are NOT fully converted — "
+                         "see the log for the full output.")
+            QMessageBox.warning(self, "Queue finished with failures",
+                                "\n".join(lines))
 
     # ------------------------------------------------------------ settings
     def _load_settings(self):
